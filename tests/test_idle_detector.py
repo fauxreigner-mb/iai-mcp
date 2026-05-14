@@ -413,3 +413,64 @@ class TestLinuxLogindBackend:
             detector = _mod.IdleDetector()
             status = detector.status()
         assert "logind_idle" in status.available_signals
+
+    def test_sleep_eligible_full_path_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """sleep_eligible() returns True on Linux when logind reports ≥30 min idle."""
+        import time
+        import iai_mcp.idle_detector as _mod
+
+        idle_sec = 35 * 60  # 35 minutes — above the 30-min threshold
+        idle_since_us = int((time.time() - idle_sec) * 1_000_000)
+        fake_stdout = f"IdleHint=yes\nIdleSinceHint={idle_since_us}\n"
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        with patch(
+            "iai_mcp.idle_detector.subprocess.run",
+            return_value=_completed_process(stdout=fake_stdout),
+        ):
+            detector = _mod.IdleDetector()
+            result = detector.sleep_eligible(heartbeat_idle_30min=False)
+        assert result is True
+
+    def test_sleep_eligible_false_when_not_idle_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """sleep_eligible() returns False on Linux when logind reports <30 min idle."""
+        import time
+        import iai_mcp.idle_detector as _mod
+
+        idle_sec = 5 * 60  # only 5 minutes — below threshold
+        idle_since_us = int((time.time() - idle_sec) * 1_000_000)
+        fake_stdout = f"IdleHint=yes\nIdleSinceHint={idle_since_us}\n"
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        with patch(
+            "iai_mcp.idle_detector.subprocess.run",
+            return_value=_completed_process(stdout=fake_stdout),
+        ):
+            detector = _mod.IdleDetector()
+            result = detector.sleep_eligible(heartbeat_idle_30min=False)
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Backend dispatch tests
+# ---------------------------------------------------------------------------
+
+
+class TestIdleDetectorBackendDispatch:
+    """Verify IdleDetector.__init__ selects the correct backend per platform."""
+
+    def test_darwin_selects_macos_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import iai_mcp.idle_detector as _mod
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        detector = _mod.IdleDetector()
+        assert isinstance(detector._backend, _mod._MacOSBackend)
+
+    def test_linux_selects_logind_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import iai_mcp.idle_detector as _mod
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        detector = _mod.IdleDetector()
+        assert isinstance(detector._backend, _mod._LinuxLogindBackend)
+
+    def test_other_platform_selects_null_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import iai_mcp.idle_detector as _mod
+        monkeypatch.setattr(platform, "system", lambda: "Windows")
+        detector = _mod.IdleDetector()
+        assert isinstance(detector._backend, _mod._NullBackend)

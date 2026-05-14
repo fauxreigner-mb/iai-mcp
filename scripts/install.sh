@@ -54,7 +54,8 @@ elif [[ "${USE_PIPX}" == "1" ]]; then
     # --editable installs from the current checkout so local edits are live.
     # --force ensures re-running is idempotent even if already installed.
     if ! pipx install --editable . --force 2>&1; then
-        warn "pipx --editable failed, trying non-editable install"
+        warn "pipx --editable failed (pipx < 1.0?), falling back to non-editable install"
+        warn "source edits will NOT be live without re-running install.sh"
         pipx install . --force
     fi
     ok "iai-mcp installed via pipx"
