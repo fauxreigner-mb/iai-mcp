@@ -57,33 +57,57 @@ LA_PATH="${HOME}/Library/LaunchAgents/com.iai-mcp.daemon.plist"
 # 2. launchctl unload (Darwin only)
 # ---------------------------------------------------------------------------
 step "launchctl unload"
-if [[ "$(uname)" != "Darwin" ]]; then
-    warn "non-Darwin OS — skipping launchctl unload"
-elif [[ "${DRY_RUN:-0}" == "1" ]]; then
-    ok "DRY_RUN=1 — skipping launchctl unload (test mode)"
-else
-    if [ -f "${LA_PATH}" ]; then
-        if launchctl unload -w "${LA_PATH}" 2>/dev/null; then
-            ok "LaunchAgent unloaded"
-        else
-            ok "LaunchAgent was not registered (already clean)"
-        fi
+if [[ "$(uname)" == "Darwin" ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        ok "DRY_RUN=1 — skipping launchctl unload (test mode)"
     else
-        ok "no LaunchAgent plist at ${LA_PATH} (already clean)"
+        if [ -f "${LA_PATH}" ]; then
+            if launchctl unload -w "${LA_PATH}" 2>/dev/null; then
+                ok "LaunchAgent unloaded"
+            else
+                ok "LaunchAgent was not registered (already clean)"
+            fi
+        else
+            ok "no LaunchAgent plist at ${LA_PATH} (already clean)"
+        fi
     fi
+elif [[ "$(uname)" == "Linux" ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        ok "DRY_RUN=1 — skipping systemctl disable (test mode)"
+    else
+        SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
+        for unit in iai-mcp-daemon.socket iai-mcp-daemon.service; do
+            if systemctl --user is-enabled "${unit}" 2>/dev/null | grep -qE "enabled|static"; then
+                systemctl --user disable --now "${unit}" 2>/dev/null || true
+                ok "disabled ${unit}"
+            fi
+            unit_file="${SYSTEMD_USER_DIR}/${unit}"
+            if [ -f "${unit_file}" ]; then
+                rm -f "${unit_file}"
+                ok "removed ${unit_file}"
+            fi
+        done
+        systemctl --user daemon-reload 2>/dev/null || true
+    fi
+else
+    warn "non-Darwin/Linux OS — skipping daemon unload"
 fi
 
 # ---------------------------------------------------------------------------
 # 3. remove plist file (Darwin only)
 # ---------------------------------------------------------------------------
 step "remove plist"
-if [[ "$(uname)" != "Darwin" ]]; then
-    warn "non-Darwin OS — skipping plist removal"
-elif [[ "${DRY_RUN:-0}" == "1" ]]; then
-    ok "DRY_RUN=1 — skipping rm of ${LA_PATH} (test mode)"
+if [[ "$(uname)" == "Darwin" ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        ok "DRY_RUN=1 — skipping rm of ${LA_PATH} (test mode)"
+    else
+        rm -f "${LA_PATH}"
+        ok "${LA_PATH} removed (or never existed)"
+    fi
+elif [[ "$(uname)" == "Linux" ]]; then
+    ok "Linux: unit files handled in previous step"
 else
-    rm -f "${LA_PATH}"
-    ok "${LA_PATH} removed (or never existed)"
+    warn "non-Darwin/Linux OS — skipping service file removal"
 fi
 
 # ---------------------------------------------------------------------------
@@ -169,16 +193,28 @@ fi
 # 7. verify
 # ---------------------------------------------------------------------------
 step "verify"
-if [[ "$(uname)" != "Darwin" ]]; then
-    warn "non-Darwin OS — skipping launchctl verify"
-elif [[ "${DRY_RUN:-0}" == "1" ]]; then
-    ok "DRY_RUN=1 — skipping launchctl list verify (test mode)"
-else
-    if launchctl list 2>/dev/null | grep -q "com.iai-mcp.daemon"; then
-        warn "com.iai-mcp.daemon still appears in launchctl list — manual cleanup may be needed"
+if [[ "$(uname)" == "Darwin" ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        ok "DRY_RUN=1 — skipping launchctl list verify (test mode)"
     else
-        ok "com.iai-mcp.daemon no longer in launchctl list"
+        if launchctl list 2>/dev/null | grep -q "com.iai-mcp.daemon"; then
+            warn "com.iai-mcp.daemon still appears in launchctl list — manual cleanup may be needed"
+        else
+            ok "com.iai-mcp.daemon no longer in launchctl list"
+        fi
     fi
+elif [[ "$(uname)" == "Linux" ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        ok "DRY_RUN=1 — skipping systemctl verify (test mode)"
+    else
+        if systemctl --user is-enabled iai-mcp-daemon.socket 2>/dev/null | grep -q "enabled"; then
+            warn "socket unit still appears enabled after removal"
+        else
+            ok "socket unit removed"
+        fi
+    fi
+else
+    warn "non-Darwin/Linux OS — skipping daemon verify"
 fi
 
 # ---------------------------------------------------------------------------

@@ -13,12 +13,15 @@
 set -u
 input=$(cat 2>/dev/null || true)
 
+# Portable python lookup — /usr/bin/python3 may be absent on some Linux distros
+_PY="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo /usr/bin/python3)"
+
 extract() {
   local key=$1
   if command -v jq >/dev/null 2>&1; then
     printf '%s' "$input" | jq -r ".${key} // empty" 2>/dev/null
   else
-    printf '%s' "$input" | /usr/bin/python3 -c "
+    printf '%s' "$input" | "${_PY}" -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -139,11 +142,11 @@ os.replace(tmp, offset)
 '
 
 if command -v timeout >/dev/null 2>&1; then
-  timeout 5 /usr/bin/python3 -c "$PY_SCRIPT" "$session_id" "$transcript_path" 2>/dev/null
+  timeout 5 "${_PY}" -c "$PY_SCRIPT" "$session_id" "$transcript_path" 2>/dev/null
 elif command -v gtimeout >/dev/null 2>&1; then
-  gtimeout 5 /usr/bin/python3 -c "$PY_SCRIPT" "$session_id" "$transcript_path" 2>/dev/null
+  gtimeout 5 "${_PY}" -c "$PY_SCRIPT" "$session_id" "$transcript_path" 2>/dev/null
 else
-  /usr/bin/python3 -c "$PY_SCRIPT" "$session_id" "$transcript_path" 2>/dev/null
+  "${_PY}" -c "$PY_SCRIPT" "$session_id" "$transcript_path" 2>/dev/null
 fi
 rc=$?
 

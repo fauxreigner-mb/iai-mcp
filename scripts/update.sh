@@ -19,6 +19,13 @@ ok()   { printf '   \033[0;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '   \033[0;33m!\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[0;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Detect install mode — mirrors install.sh logic.
+USE_PIPX=0
+PIPX_VENV="${HOME}/.local/share/pipx/venvs/iai-mcp"
+if [[ "$(uname)" == "Linux" ]] && [ -d "${PIPX_VENV}" ]; then
+    USE_PIPX=1
+fi
+
 # ---------------------------------------------------------------------------
 # 0. Preconditions
 # ---------------------------------------------------------------------------
@@ -33,8 +40,13 @@ fi
 ok "working tree clean"
 
 VENV_PY="${REPO_ROOT}/.venv/bin/python"
-[ -x "${VENV_PY}" ] || die ".venv/bin/python not found — run 'python3 -m venv .venv && .venv/bin/pip install -e .' once, then rerun"
-ok "venv detected"
+if [[ "${USE_PIPX}" == "1" ]]; then
+    command -v pipx >/dev/null 2>&1 || die "pipx-managed install detected but pipx not found on PATH"
+    ok "pipx-managed install detected (${PIPX_VENV})"
+else
+    [ -x "${VENV_PY}" ] || die ".venv/bin/python not found — run 'bash scripts/install.sh' first"
+    ok "venv detected"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. git pull (fast-forward only — never merge surprises)
@@ -55,9 +67,15 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Python package (editable reinstall — picks up deps or entry-point drift)
 # ---------------------------------------------------------------------------
-step "python package refresh (editable)"
-"${VENV_PY}" -m pip install --quiet -e . || die "pip install -e failed"
-ok "iai-mcp python package up to date"
+step "python package refresh"
+if [[ "${USE_PIPX}" == "1" ]]; then
+    # Re-install from the current checkout to pick up dep or entry-point drift.
+    pipx install --editable . --force --quiet 2>&1 || die "pipx reinstall failed"
+    ok "iai-mcp python package up to date (pipx)"
+else
+    "${VENV_PY}" -m pip install --quiet -e . || die "pip install -e failed"
+    ok "iai-mcp python package up to date (venv)"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. TypeScript MCP wrapper
@@ -98,9 +116,10 @@ fi
 step "daemon lifecycle"
 IAI_MCP="${REPO_ROOT}/.venv/bin/iai-mcp"
 
-# Check template drift using a python one-liner (avoids shell grep, which is
-# hook-blocked in this repo's dev env).
-TEMPLATE_CHECK="$("${VENV_PY}" - <<'PY'
+# Check template drift (Darwin: launchd plist; Linux: systemd service unit).
+if [[ "$(uname)" == "Darwin" ]]; then
+    # Python one-liner avoids shell grep (hook-blocked in this repo's dev env).
+    TEMPLATE_CHECK="$("${VENV_PY}" - <<'PY'
 import pathlib, sys
 home = pathlib.Path.home()
 installed = home / "Library/LaunchAgents/com.iai-mcp.daemon.plist"
@@ -114,10 +133,23 @@ b_env = "IAI_MCP_STORE" in rendered and home.as_posix() + "/.iai-mcp" in rendere
 print("drift" if a_env != b_env else "same")
 PY
 )"
-
-if [ "${TEMPLATE_CHECK}" = "drift" ]; then
-    warn "launchd plist template drift detected"
-    warn "run: '${IAI_MCP} daemon uninstall --yes && ${IAI_MCP} daemon install --yes' to pick up the new plist"
+    if [ "${TEMPLATE_CHECK}" = "drift" ]; then
+        warn "launchd plist template drift detected"
+        warn "run: '${IAI_MCP} daemon uninstall --yes && ${IAI_MCP} daemon install --yes' to pick up the new plist"
+    fi
+elif [[ "$(uname)" == "Linux" ]]; then
+    SERVICE_FILE="${HOME}/.config/systemd/user/iai-mcp-daemon.service"
+    SERVICE_TEMPLATE="${REPO_ROOT}/deploy/systemd/iai-mcp-daemon.service"
+    if [ -f "${SERVICE_FILE}" ] && [ -f "${SERVICE_TEMPLATE}" ]; then
+        PYTHON_PATH="${REPO_ROOT}/.venv/bin/python"
+        RENDERED="$(sed "s|/usr/bin/python3|${PYTHON_PATH}|g" "${SERVICE_TEMPLATE}")"
+        INSTALLED="$(cat "${SERVICE_FILE}")"
+        if [ "${RENDERED}" != "${INSTALLED}" ]; then
+            warn "systemd service unit has drifted from template — re-run install.sh to update"
+        else
+            ok "systemd unit matches template"
+        fi
+    fi
 fi
 
 if "${IAI_MCP}" daemon status >/dev/null 2>&1; then

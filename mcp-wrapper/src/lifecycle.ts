@@ -93,6 +93,16 @@ const LAUNCHD_LABEL = "com.iai-mcp.daemon";
  * before this in the boot flow). */
 const KICKSTART_TIMEOUT_MS = 5_000;
 
+/** Hard-coded systemctl binary path. Used on Linux for socket-activation
+ * kickstart. Argv-only invocation — no shell interpretation. */
+const SYSTEMCTL_BIN = "/usr/bin/systemctl";
+
+/** systemd user socket unit name for the IAI-MCP daemon. */
+const SYSTEMD_SOCKET_UNIT = "iai-mcp-daemon.socket";
+
+/** Subprocess timeout (ms) for the systemctl start call. */
+const SYSTEMD_START_TIMEOUT_MS = 5_000;
+
 // ---------------------------------------------------------------- types
 
 interface HeartbeatPayload {
@@ -143,6 +153,9 @@ export interface WrapperLifecycleOptions {
   /** Spawn `launchctl kickstart`. Defaults to the real `execFile` call.
    * Tests inject a mock that resolves or rejects deterministically. */
   spawnKickstart?: () => Promise<void>;
+  /** Spawn `systemctl --user start iai-mcp-daemon.socket`. Defaults to the
+   * real `execFile` call. Tests inject a mock. */
+  spawnSystemdSocket?: () => Promise<void>;
   /** Heartbeat refresh interval (ms). Defaults to
    * `HEARTBEAT_REFRESH_INTERVAL_MS`. Tests pass a smaller value. */
   refreshIntervalMs?: number;
@@ -157,6 +170,7 @@ export class WrapperLifecycle {
   private readonly platform: NodeJS.Platform;
   private readonly socketReachable: () => Promise<boolean>;
   private readonly spawnKickstart: () => Promise<void>;
+  private readonly spawnSystemdSocket: () => Promise<void>;
   private readonly refreshIntervalMs: number;
 
   private readonly startedAt: string;
@@ -172,6 +186,7 @@ export class WrapperLifecycle {
     this.platform = opts.platform ?? process.platform;
     this.socketReachable = opts.socketReachable ?? defaultSocketReachable(this.socketPath);
     this.spawnKickstart = opts.spawnKickstart ?? defaultSpawnKickstart();
+    this.spawnSystemdSocket = opts.spawnSystemdSocket ?? defaultSpawnSystemdSocket();
     this.refreshIntervalMs = opts.refreshIntervalMs ?? HEARTBEAT_REFRESH_INTERVAL_MS;
     this.startedAt = isoNow();
   }
@@ -195,13 +210,19 @@ export class WrapperLifecycle {
         await this.spawnKickstart();
         return;
       } catch {
-        // Kickstart failed (launchd label missing, permission error,
-        // timeout). Fall through to the wake.signal fallback so the
-        // daemon's next cold-start path still consumes the request.
+        // Kickstart failed — fall through to wake.signal.
+      }
+    } else if (this.platform === "linux") {
+      try {
+        await this.spawnSystemdSocket();
+        // Socket unit started; the daemon activates on first connect.
+        return;
+      } catch {
+        // systemctl failed (unit not installed, systemd absent).
+        // Fall through to wake.signal so a future daemon boot picks it up.
       }
     }
-    // Non-darwin OR darwin-with-failed-kickstart: write the cross-
-    // platform marker so a future daemon boot picks it up.
+    // Non-darwin/linux OR fallback: write the cross-platform marker.
     try {
       await this.writeWakeSignal();
     } catch {
@@ -334,6 +355,17 @@ function defaultSpawnKickstart(): () => Promise<void> {
     await execFileAsync(LAUNCHCTL_BIN, args, {
       timeout: KICKSTART_TIMEOUT_MS,
       // No `shell` option — argv-only invocation, no shell interpretation.
+    });
+  };
+}
+
+/** Default Linux socket-activation: `systemctl --user start iai-mcp-daemon.socket`.
+ * Idempotent — safe to call even if the unit is already active.
+ * The socket unit holds the UNIX socket open; service activates on first connect. */
+function defaultSpawnSystemdSocket(): () => Promise<void> {
+  return async () => {
+    await execFileAsync(SYSTEMCTL_BIN, ["--user", "start", SYSTEMD_SOCKET_UNIT], {
+      timeout: SYSTEMD_START_TIMEOUT_MS,
     });
   };
 }

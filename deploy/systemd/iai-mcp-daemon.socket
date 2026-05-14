@@ -1,0 +1,21 @@
+# IAI-MCP Sleep Daemon socket unit (socket activation)
+#
+# Install at ~/.config/systemd/user/iai-mcp-daemon.socket, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now iai-mcp-daemon.socket
+#
+# The socket unit holds the UNIX socket open even when the service is not
+# running. The first connect() call activates iai-mcp-daemon.service, which
+# inherits fd 3 via the LISTEN_FDS protocol (already implemented in
+# iai_mcp.concurrency). This mirrors the launchd Sockets.Listener behavior.
+
+[Unit]
+Description=IAI-MCP Sleep Daemon socket
+
+[Socket]
+ListenStream=%h/.iai-mcp/.daemon.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target
