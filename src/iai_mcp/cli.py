@@ -1024,7 +1024,7 @@ def _patch_claude_desktop_config(action: str) -> str:
             servers.pop("iai-mcp", None)
             cfg_path.write_text(_json.dumps(data, indent=2))
             return f"Claude Desktop: removed iai-mcp from {cfg_path}"
-        return f"Claude Desktop: iai-mcp not in config — no change"
+        return "Claude Desktop: iai-mcp not in config — no change"
 
     # install
     new_entry = _build_iai_mcp_server_entry(repo_root)
@@ -1104,7 +1104,7 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
         for entry in stop_list
     )
     if already_stop:
-        print(f"settings.json already has Stop hook — no change")
+        print("settings.json already has Stop hook — no change")
     else:
         stop_list.append({"hooks": [{"type": "command", "command": hook_cmd, "timeout": 35}]})
         print(f"patched: {settings} (Stop hook registered)")
@@ -1115,7 +1115,7 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
         for entry in submit_list
     )
     if already_turn:
-        print(f"settings.json already has UserPromptSubmit hook — no change")
+        print("settings.json already has UserPromptSubmit hook — no change")
     else:
         submit_list.append({"hooks": [{"type": "command", "command": turn_cmd, "timeout": 5}]})
         print(f"patched: {settings} (UserPromptSubmit hook registered)")
@@ -2595,7 +2595,6 @@ def cmd_maintenance_sleep_cycle(args: argparse.Namespace) -> int:
     Step 5 (compact_records) uses retention=0d and is intended for
     CLI-only invocation.
     """
-    from datetime import timezone as _tz
 
     from iai_mcp.lifecycle_event_log import LifecycleEventLog
     from iai_mcp.lifecycle_state import LIFECYCLE_STATE_PATH

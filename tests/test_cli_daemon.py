@@ -16,16 +16,12 @@ multiple asyncio.run() teardowns by running on a dedicated background loop).
 from __future__ import annotations
 
 import asyncio
-import io
 import json
-import os
 import platform
 import sys
 import tempfile
 import threading
-from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
