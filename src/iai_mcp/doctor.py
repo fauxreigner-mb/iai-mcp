@@ -39,6 +39,7 @@ import argparse
 import asyncio
 import json
 import os
+import platform
 import signal
 import subprocess
 import sys
@@ -53,6 +54,7 @@ from typing import Any, Callable
 # can finish bge-small load (~3-10s) plus LanceDB open (~1s).
 _LAUNCHD_REACT_DELAY_SEC = 2.0
 _SYSTEMD_REACT_DELAY_SEC = 2.0
+_SYSTEMCTL_START_TIMEOUT_SEC = 10
 _RESPAWN_BIND_TIMEOUT_SEC = 8.0
 _RESPAWN_POLL_INTERVAL_SEC = 0.1
 
@@ -1054,9 +1056,9 @@ def check_n_hid_idle_source() -> CheckResult:
 
     Status rules:
       - PASS: ``available_signals`` is non-empty (any hardware source present).
-      - WARN: signal list empty (will fall back to heartbeat-only L6 — the
+      - WARN: signal list empty (will fall back to heartbeat-only L6 - the
         daemon stays correct but loses the hardware backstop). Advisory
-        only — does NOT flip the doctor exit code (mirrors check_i WARN).
+        only - does NOT flip the doctor exit code (mirrors check_i WARN).
 
     Display includes the current idle value and available signal names so
     the user can see what the L6 sleep predicate is evaluating right now.
@@ -1081,13 +1083,13 @@ def check_n_hid_idle_source() -> CheckResult:
 
     if status.available_signals:
         return CheckResult(
-            name="(n) HID idle source",
+            name="(n) idle source",
             passed=True,
             detail=detail,
             status="PASS",
         )
     return CheckResult(
-        name="(n) HID idle source",
+        name="(n) idle source",
         passed=True,  # WARN — advisory only, does not flip exit code.
         detail=(
             f"{detail}; L6 will fall back to heartbeat-idle only"
@@ -1252,8 +1254,6 @@ def _respawn_daemon() -> tuple[bool, str, int]:
     test recovery would always spawn against the user's real ~/.iai-mcp/
     paths — the env-isolation contract from LOCK.
     """
-    import platform as _plat
-
     from iai_mcp.cli import LAUNCHD_TARGET, SYSTEMD_TARGET
 
     t0 = time.monotonic()
@@ -1278,21 +1278,28 @@ def _respawn_daemon() -> tuple[bool, str, int]:
 
     # systemd-managed: call `systemctl --user start iai-mcp-daemon.socket`
     # which is idempotent and immediately triggers socket activation.
-    if using_default_socket and _plat.system() == "Linux":
-        try:
-            _target_path = Path(SYSTEMD_TARGET).expanduser()
-        except Exception:
-            _target_path = None
-        if _target_path and _target_path.exists():
+    if using_default_socket and platform.system() == "Linux":
+        target_path = Path(SYSTEMD_TARGET).expanduser()
+        if target_path.exists():
             try:
-                subprocess.run(
+                result = subprocess.run(
                     ["systemctl", "--user", "start", "iai-mcp-daemon.socket"],
                     check=False,
                     capture_output=True,
-                    timeout=10,
+                    timeout=_SYSTEMCTL_START_TIMEOUT_SEC,
                 )
-            except Exception:
-                pass
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+                return (
+                    False,
+                    f"systemctl start failed: {type(e).__name__}: {e}",
+                    int((time.monotonic() - t0) * 1000),
+                )
+            if result.returncode != 0:
+                return (
+                    False,
+                    f"systemctl start failed (rc={result.returncode})",
+                    int((time.monotonic() - t0) * 1000),
+                )
             return (
                 True,
                 "systemd-managed (socket unit started, will activate daemon)",

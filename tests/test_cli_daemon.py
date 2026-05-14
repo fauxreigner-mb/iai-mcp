@@ -275,10 +275,11 @@ def test_install_linux_writes_both_service_and_socket_units(
     """Install on Linux writes both .service and .socket unit files."""
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     monkeypatch.setenv("USER", "testuser")
-    monkeypatch.setattr(
-        cli_mod.subprocess, "run",
-        lambda argv, **kw: type("R", (), {"returncode": 0, "stdout": "Linger=yes", "stderr": ""})(),
-    )
+
+    def _fake_run(argv, **kwargs):
+        return type("_FakeResult", (), {"returncode": 0, "stdout": "Linger=yes", "stderr": ""})()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
     rc = cli_mod.main(["daemon", "install", "--yes"])
     assert rc == 0
     assert cli_mod.SYSTEMD_TARGET.exists(), "service unit must be written"
@@ -399,11 +400,12 @@ def test_uninstall_linux_removes_unit_and_all_state_files(
 ) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        cli_mod.subprocess,
-        "run",
-        lambda argv, **k: (calls.append(list(argv)) or type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()),
-    )
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return type("_FakeResult", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
 
     cli_mod.SYSTEMD_TARGET.parent.mkdir(parents=True, exist_ok=True)
     cli_mod.SYSTEMD_TARGET.write_text("[Service]")
@@ -661,11 +663,12 @@ def test_start_linux_uses_systemctl_start(
 ) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        cli_mod.subprocess,
-        "run",
-        lambda argv, **k: (calls.append(list(argv)) or type("R", (), {"returncode": 0})()),
-    )
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return type("_FakeResult", (), {"returncode": 0})()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
     rc = cli_mod.main(["daemon", "start"])
     assert rc == 0
     assert any(c[:4] == ["systemctl", "--user", "start", "iai-mcp-daemon.socket"] for c in calls), calls
@@ -678,10 +681,12 @@ def test_start_linux_uses_socket_unit(
     """daemon start on Linux starts the socket unit, not the service."""
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        cli_mod.subprocess, "run",
-        lambda argv, **kw: calls.append(list(argv)) or type("R", (), {"returncode": 0})(),
-    )
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return type("_FakeResult", (), {"returncode": 0})()
+
+    monkeypatch.setattr(cli_mod.subprocess, "run", _fake_run)
     rc = cli_mod.main(["daemon", "start"])
     assert rc == 0
     assert any("iai-mcp-daemon.socket" in " ".join(c) for c in calls), calls

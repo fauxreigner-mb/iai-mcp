@@ -60,6 +60,9 @@ _IOREG_TIMEOUT_SEC = 5
 #: log and on a long-uptime machine can take ~1 s; 10 s ceiling.
 _PMSET_TIMEOUT_SEC = 10
 
+#: Subprocess timeout for ``loginctl show-session`` (Linux).
+_LOGINCTL_TIMEOUT_SEC = 5
+
 #: Number of trailing lines to scan from ``pmset -g log``. The log is
 #: append-only and ordered by time, so the most-recent events are at the end.
 #: 200 lines covers ~last 24 h on a typical workstation; the window check
@@ -215,7 +218,7 @@ class _LinuxLogindBackend:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=_LOGINCTL_TIMEOUT_SEC,
                 check=False,
             )
         except FileNotFoundError:
@@ -230,25 +233,20 @@ class _LinuxLogindBackend:
 
         stdout = result.stdout or ""
 
-        # Parse IdleHint=yes|no
+        # Parse IdleHint and IdleSinceHint in one pass.
         idle_hint_yes = False
+        idle_since_us: int | None = None
         for line in stdout.splitlines():
             if line.startswith("IdleHint="):
                 idle_hint_yes = line.split("=", 1)[1].strip().lower() == "yes"
-                break
-
-        # Parse IdleSinceHint=<microseconds-since-epoch>
-        idle_since_us: int | None = None
-        for line in stdout.splitlines():
-            if line.startswith("IdleSinceHint="):
-                raw = line.split("=", 1)[1].strip()
+            elif line.startswith("IdleSinceHint="):
+                raw_value = line.split("=", 1)[1].strip()
                 try:
-                    val = int(raw)
-                    if val > 0:
-                        idle_since_us = val
+                    parsed_us = int(raw_value)
+                    if parsed_us > 0:
+                        idle_since_us = parsed_us
                 except ValueError:
                     pass
-                break
 
         if idle_since_us is None:
             return None
@@ -262,31 +260,13 @@ class _LinuxLogindBackend:
 
         return max(elapsed, 0)
 
-    def recent_suspend(self, window_min: int = 5) -> bool:
-        """Always False — container/Distrobox can't see host suspend events."""
+    def recent_suspend(self) -> bool:
+        """Always False - container/Distrobox can't see host suspend events."""
         return False
 
     def available_signals(self) -> list[str]:
         """Return ``["logind_idle"]`` if loginctl responded, else ``[]``."""
-        session_id = os.environ.get("XDG_SESSION_ID", "auto")
-        try:
-            result = subprocess.run(
-                [
-                    "loginctl",
-                    "show-session",
-                    session_id,
-                    "--property=IdleHint",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except Exception:
-            return []
-        if result.returncode != 0:
-            return []
-        return ["logind_idle"]
+        return ["logind_idle"] if self.hid_idle_time_sec() is not None else []
 
 
 class _NullBackend:
@@ -298,7 +278,7 @@ class _NullBackend:
     def pmset_recent_sleep(self, window_min: int = _PMSET_DEFAULT_WINDOW_MIN) -> bool:
         return False
 
-    def recent_suspend(self, window_min: int = 5) -> bool:
+    def recent_suspend(self) -> bool:
         return False
 
     def available_signals(self) -> list[str]:
@@ -458,10 +438,10 @@ def _parse_pmset_timestamp(line: str) -> datetime | None:
     builds is finicky with shorthand offsets — we apply the offset to a
     naive datetime and tag it as UTC.
     """
-    m = _PMSET_TS_RE.match(line)
-    if m is None:
+    ts_match = _PMSET_TS_RE.match(line)
+    if ts_match is None:
         return None
-    ts_str, offset_str = m.group(1), m.group(2)
+    ts_str, offset_str = ts_match.group(1), ts_match.group(2)
     try:
         naive = datetime.strptime(ts_str, _PMSET_TS_FMT)
     except ValueError:

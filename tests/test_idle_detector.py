@@ -347,7 +347,7 @@ class TestLinuxLogindBackend:
         # Allow ±5s slop for test execution time
         assert abs(result - idle_sec) < 5, f"expected ~{idle_sec}s, got {result}s"
 
-    def test_hid_idle_time_sec_returns_none_on_file_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_hid_idle_time_sec_returns_none_on_file_not_found(self) -> None:
         """FileNotFoundError (loginctl absent) → None."""
         import iai_mcp.idle_detector as _mod
         with patch("iai_mcp.idle_detector.subprocess.run", side_effect=FileNotFoundError("loginctl not found")):
@@ -419,7 +419,7 @@ class TestLinuxLogindBackend:
         import time
         import iai_mcp.idle_detector as _mod
 
-        idle_sec = 35 * 60  # 35 minutes — above the 30-min threshold
+        idle_sec = 35 * 60  # 35 minutes - above the 30-min threshold
         idle_since_us = int((time.time() - idle_sec) * 1_000_000)
         fake_stdout = f"IdleHint=yes\nIdleSinceHint={idle_since_us}\n"
         monkeypatch.setattr(platform, "system", lambda: "Linux")

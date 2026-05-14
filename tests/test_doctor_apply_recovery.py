@@ -388,14 +388,14 @@ def test_respawn_daemon_linux_yields_to_systemd(
 
     calls: list[list[str]] = []
 
-    def _fake_run(argv, **kw):
+    def _fake_run(argv, **kwargs):
         calls.append(list(argv))
-        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        return type("_FakeResult", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(doctor_mod.subprocess, "run", _fake_run)
 
-    ok, msg, duration_ms = doctor_mod._respawn_daemon()
+    success, msg, duration_ms = doctor_mod._respawn_daemon()
 
-    assert ok is True
+    assert success is True
     assert "systemd" in msg.lower()
     assert any("systemctl" in " ".join(c) and "iai-mcp-daemon.socket" in " ".join(c) for c in calls), calls
