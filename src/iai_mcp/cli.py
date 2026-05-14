@@ -71,14 +71,17 @@ STATE_PATH: Path = Path.home() / ".iai-mcp" / ".daemon-state.json"
 # system-level dirs).
 LAUNCHD_TARGET: Path = Path.home() / "Library" / "LaunchAgents" / "com.iai-mcp.daemon.plist"
 SYSTEMD_TARGET: Path = Path.home() / ".config" / "systemd" / "user" / "iai-mcp-daemon.service"
+SYSTEMD_SOCKET_TARGET: Path = Path.home() / ".config" / "systemd" / "user" / "iai-mcp-daemon.socket"
 
 # Repo-relative templates shipped with the package.
 _PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 LAUNCHD_TEMPLATE: Path = _PROJECT_ROOT / "deploy" / "launchd" / "com.iai-mcp.daemon.plist"
 SYSTEMD_TEMPLATE: Path = _PROJECT_ROOT / "deploy" / "systemd" / "iai-mcp-daemon.service"
+SYSTEMD_SOCKET_TEMPLATE: Path = _PROJECT_ROOT / "deploy" / "systemd" / "iai-mcp-daemon.socket"
 
 DAEMON_LABEL: str = "com.iai-mcp.daemon"
 SERVICE_NAME: str = "iai-mcp-daemon.service"
+SOCKET_UNIT_NAME: str = "iai-mcp-daemon.socket"
 
 # First-run consent banner. Wording cites RAM cost, Claude budget cap,
 # opt-out command. Aborts unless user types lowercase 'y' (strict).
@@ -157,6 +160,11 @@ def _render_systemd_unit() -> str:
     text = SYSTEMD_TEMPLATE.read_text()
     text = text.replace("/usr/bin/python3", sys.executable)
     return text
+
+
+def _render_systemd_socket_unit() -> str:
+    """Read the socket unit template verbatim — no substitutions needed."""
+    return SYSTEMD_SOCKET_TEMPLATE.read_text()
 
 
 def _try_short_timeout_connect(timeout_ms: int = 250) -> bool:
@@ -434,7 +442,16 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
             check=False, capture_output=True,
         )
     else:
-        # Linux: probe loginctl Linger state (Pitfall 8). If not enabled, try
+        # Linux: also write the socket unit for socket activation.
+        socket_content = _render_systemd_socket_unit()
+        SYSTEMD_SOCKET_TARGET.parent.mkdir(parents=True, exist_ok=True)
+        SYSTEMD_SOCKET_TARGET.write_text(socket_content)
+        try:
+            os.chmod(SYSTEMD_SOCKET_TARGET, 0o644)
+        except OSError:
+            pass
+
+        # Probe loginctl Linger state (Pitfall 8). If not enabled, try
         # to enable; if still not enabled after that, warn loudly.
         user = os.environ.get("USER") or ""
         linger_probe = subprocess.run(
@@ -460,8 +477,9 @@ def cmd_daemon_install(args: argparse.Namespace) -> int:
             ["systemctl", "--user", "daemon-reload"],
             check=False, capture_output=True,
         )
+        # Enable the socket unit — it activates the service on first connect.
         subprocess.run(
-            ["systemctl", "--user", "enable", "--now", SERVICE_NAME],
+            ["systemctl", "--user", "enable", "--now", SOCKET_UNIT_NAME],
             check=False, capture_output=True,
         )
 
@@ -505,10 +523,19 @@ def cmd_daemon_uninstall(args: argparse.Namespace) -> int:
                 SYSTEMD_TARGET.unlink()
             except OSError as exc:
                 print(f"warning: could not remove unit: {exc}", file=sys.stderr)
+        if SYSTEMD_SOCKET_TARGET.exists():
             subprocess.run(
-                ["systemctl", "--user", "daemon-reload"],
+                ["systemctl", "--user", "disable", "--now", SOCKET_UNIT_NAME],
                 check=False, capture_output=True,
             )
+            try:
+                SYSTEMD_SOCKET_TARGET.unlink()
+            except OSError as exc:
+                print(f"warning: could not remove socket unit: {exc}", file=sys.stderr)
+        subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            check=False, capture_output=True,
+        )
 
     _remove_state_files()
     print("Daemon uninstalled. State files removed.")
@@ -524,7 +551,7 @@ def cmd_daemon_start(args: argparse.Namespace) -> int:
         )
     elif _is_linux():
         subprocess.run(
-            ["systemctl", "--user", "start", SERVICE_NAME],
+            ["systemctl", "--user", "start", SOCKET_UNIT_NAME],
             check=False,
         )
     else:
@@ -997,7 +1024,7 @@ def _patch_claude_desktop_config(action: str) -> str:
             servers.pop("iai-mcp", None)
             cfg_path.write_text(_json.dumps(data, indent=2))
             return f"Claude Desktop: removed iai-mcp from {cfg_path}"
-        return f"Claude Desktop: iai-mcp not in config — no change"
+        return "Claude Desktop: iai-mcp not in config — no change"
 
     # install
     new_entry = _build_iai_mcp_server_entry(repo_root)
@@ -1077,7 +1104,7 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
         for entry in stop_list
     )
     if already_stop:
-        print(f"settings.json already has Stop hook — no change")
+        print("settings.json already has Stop hook — no change")
     else:
         stop_list.append({"hooks": [{"type": "command", "command": hook_cmd, "timeout": 35}]})
         print(f"patched: {settings} (Stop hook registered)")
@@ -1088,7 +1115,7 @@ def cmd_capture_hooks_install(args: argparse.Namespace) -> int:
         for entry in submit_list
     )
     if already_turn:
-        print(f"settings.json already has UserPromptSubmit hook — no change")
+        print("settings.json already has UserPromptSubmit hook — no change")
     else:
         submit_list.append({"hooks": [{"type": "command", "command": turn_cmd, "timeout": 5}]})
         print(f"patched: {settings} (UserPromptSubmit hook registered)")
@@ -1744,7 +1771,7 @@ def cmd_crypto_migrate_to_file(args: argparse.Namespace) -> int:
             "keyring entry kept (default). "
             "To remove manually, run "
             "`iai-mcp crypto migrate-to-file --delete-keychain` "
-            "or use macOS Keychain Access.app."
+            "or use OS keyring (macOS Keychain / Linux SecretService)."
         )
 
     return 0
@@ -2568,7 +2595,6 @@ def cmd_maintenance_sleep_cycle(args: argparse.Namespace) -> int:
     Step 5 (compact_records) uses retention=0d and is intended for
     CLI-only invocation.
     """
-    from datetime import timezone as _tz
 
     from iai_mcp.lifecycle_event_log import LifecycleEventLog
     from iai_mcp.lifecycle_state import LIFECYCLE_STATE_PATH
@@ -2749,7 +2775,7 @@ def _build_parser() -> argparse.ArgumentParser:
     mtf = crypto_sub.add_parser(
         "migrate-to-file",
         help=(
-            "one-time: read existing key from macOS Keychain and write to "
+            "one-time: read existing key from OS keyring (macOS Keychain / Linux SecretService) and write to "
             ".crypto.key file (interactive Terminal only)"
         ),
     )
@@ -2760,13 +2786,13 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="keep_keychain",
         action="store_true",
         default=True,
-        help="leave the existing macOS Keychain entry in place (default)",
+        help="leave the existing OS keyring (macOS Keychain / Linux SecretService) entry in place (default)",
     )
     mtf_group.add_argument(
         "--delete-keychain",
         dest="keep_keychain",
         action="store_false",
-        help="delete the macOS Keychain entry after successful migration",
+        help="delete the OS keyring (macOS Keychain / Linux SecretService) entry after successful migration",
     )
     mtf.set_defaults(func=cmd_crypto_migrate_to_file)
 

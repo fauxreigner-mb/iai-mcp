@@ -359,3 +359,43 @@ def test_apply_no_yes_skips_destructive_action_on_n_response(
     assert rc == 2, (
         f"declining destructive action should leave FAILs unfixed → rc=2; got {rc}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 3: Linux systemd respawn branch
+# ---------------------------------------------------------------------------
+
+
+def test_respawn_daemon_linux_yields_to_systemd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On Linux with SYSTEMD_TARGET present, _respawn_daemon calls systemctl start socket."""
+    import platform
+    import iai_mcp.doctor as doctor_mod
+    import iai_mcp.cli as cli_mod
+
+    # Set up fake SYSTEMD_TARGET that exists
+    fake_unit = tmp_path / "iai-mcp-daemon.service"
+    fake_unit.write_text("[Service]\n")
+    monkeypatch.setattr(cli_mod, "SYSTEMD_TARGET", fake_unit)
+
+    # Simulate Linux platform
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+
+    # Ensure no custom socket path (default socket path)
+    monkeypatch.delenv("IAI_DAEMON_SOCKET_PATH", raising=False)
+
+    calls: list[list[str]] = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return type("_FakeResult", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", _fake_run)
+
+    success, msg, duration_ms = doctor_mod._respawn_daemon()
+
+    assert success is True
+    assert "systemd" in msg.lower()
+    assert any("systemctl" in " ".join(c) and "iai-mcp-daemon.socket" in " ".join(c) for c in calls), calls

@@ -9,7 +9,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue.svg" alt="Python 3.11 | 3.12">
-  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="Platform: macOS">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform: macOS | Linux">
 </p>
 <p align="center">
   <img src="https://img.shields.io/badge/verbatim%20recall-%E2%89%A599%25%20at%2010k-brightgreen.svg" alt="Verbatim recall >= 99%">
@@ -57,15 +57,17 @@ I built this for myself. It worked. I've been running it daily for months, and n
 
 ### Prerequisites
 
-- macOS (Apple Silicon tested)
+- macOS 12+ or Linux (see [Linux quickstart](#linux-quickstart) below)
 - Python 3.11 or 3.12
 - Node.js 18+
 - [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) or Codex CLI as the MCP host
 - ~500 MB free disk
 
-Windows and Linux not supported yet but I'm working on it.
+Windows is not supported.
 
 ### Install
+
+#### macOS
 
 ```bash
 git clone https://github.com/CodeAbra/iai-mcp.git
@@ -73,12 +75,50 @@ cd iai-mcp
 bash scripts/install.sh
 ```
 
-The installer creates a Python venv, installs dependencies (LanceDB, sentence-transformers, torch-hd, NetworkX, igraph), builds the TypeScript MCP wrapper, pre-downloads the default embedding model (~130 MB), symlinks the CLI to `~/.local/bin/iai-mcp`, and on macOS registers the daemon with launchd.
+The installer creates a Python venv, installs dependencies (LanceDB, sentence-transformers, torch-hd, NetworkX, igraph), builds the TypeScript MCP wrapper, pre-downloads the default embedding model (~130 MB), symlinks the CLI to `~/.local/bin/iai-mcp`, and registers the daemon with launchd.
 
-Make sure `~/.local/bin` is on your `PATH`:
+#### Linux quickstart
+
+The recommended install method on any Linux is `pipx`, which installs iai-mcp into an isolated venv at `~/.local/share/pipx/venvs/iai-mcp/` and links the CLI to `~/.local/bin/iai-mcp`. This works on standard distros and immutable systems alike.
+
+**Step 1 — install pipx and Node.js**
+
+| Distro family | Command |
+|---|---|
+| Ubuntu / Debian | `sudo apt install pipx nodejs` |
+| Fedora | `sudo dnf install pipx nodejs` |
+| Arch | `sudo pacman -S python-pipx nodejs` |
+| Immutable (Silverblue, Kinoite, Bazzite, Aurora, Bluefin, …) | `brew install pipx node` |
+
+On immutable Fedora Atomic systems (OSTree-managed), install [Homebrew](https://brew.sh) for user-space tools if you haven't already — system packages are read-only.
+
+**Step 2 — install iai-mcp**
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"  # add to ~/.zshrc or ~/.bashrc
+pipx ensurepath          # adds ~/.local/bin to PATH (run once)
+pipx install git+https://github.com/CodeAbra/iai-mcp.git
+```
+
+Or, if you have cloned the repo and want to run from source:
+
+```bash
+git clone https://github.com/CodeAbra/iai-mcp.git
+cd iai-mcp
+bash scripts/install.sh  # auto-detects pipx
+```
+
+**Step 3 — install the daemon**
+
+```bash
+iai-mcp daemon install --yes
+```
+
+This writes `~/.config/systemd/user/iai-mcp-daemon.{service,socket}`, enables socket activation, and runs `loginctl enable-linger` so the daemon survives logout.
+
+Make sure `~/.local/bin` is on your PATH:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"  # add to ~/.bashrc or ~/.zshrc
 iai-mcp --version
 ```
 
@@ -128,6 +168,9 @@ Claude Code:
 ```bash
 claude mcp add iai-mcp -- node "$(pwd)/mcp-wrapper/dist/index.js"
 ```
+
+> On Linux the command is identical. Replace the path with your actual clone
+> location — `$(pwd)` works if you run the command from the repo root.
 
 Or edit `~/.claude.json` directly:
 
@@ -354,6 +397,8 @@ When in doubt, run `iai-mcp doctor` and read what it says. The output is self-ex
 
 This is experimental. I built it for myself, it works on my machine, and I'm sharing it because it might be useful to you. No SLA, no support guarantee. Breaking changes are possible between versions. Pin a commit hash if you depend on stability.
 
+Linux support is new (systemd user services, logind idle detection, pipx install). Tested on Fedora Atomic / Universal Blue. Bug reports welcome.
+
 Limitations worth knowing about:
 
 - The default embedding model is English-only. The assistant translates to English on the way into memory. The opt-in `bge-m3` model removes this constraint at a cost of ~3x storage and slower indexing.
@@ -366,11 +411,13 @@ Limitations worth knowing about:
 
 ## Compatibility
 
-Claude Code is the primary host, validated in daily use.
+Claude Code is the primary host, validated in daily use on macOS and Linux (Fedora Atomic / Universal Blue).
 
 Claude Desktop should work (uses `claude_desktop_config.json` instead of `~/.claude.json`) but hasn't been tested end to end.
 
 Codex CLI supports the MCP wrapper and ambient capture through a `Stop` hook.
+
+Linux daemon runs as a systemd user service with socket activation. Idle detection uses logind; on containers or setups without a full session, the daemon falls back to heartbeat-idle mode.
 
 Other MCP-over-stdio hosts speak the same protocol and should work in principle. Not tested.
 

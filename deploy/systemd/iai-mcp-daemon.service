@@ -13,6 +13,8 @@
 [Unit]
 Description=IAI-MCP Sleep Daemon -- autonomous neural consolidation between sessions
 After=default.target
+Requires=iai-mcp-daemon.socket
+After=iai-mcp-daemon.socket
 
 [Service]
 Type=simple
@@ -24,6 +26,11 @@ StartLimitBurst=3
 
 Environment="IAI_MCP_STORE=%h/.iai-mcp"
 Environment="LANG=en_US.UTF-8"
+Environment="LIFECYCLE_DROWSY_AFTER_SEC=300"
+Environment="LIFECYCLE_SLEEP_HEARTBEAT_IDLE_SEC=1800"
+Environment="LIFECYCLE_HIBERNATE_AFTER_SEC=7200"
+Environment="IAI_MCP_SLEEP_QUARANTINE_TTL_HOURS=24"
+Environment="IAI_MCP_SYSTEMD_MANAGED=1"
 
 StandardOutput=journal
 StandardError=journal

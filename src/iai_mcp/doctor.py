@@ -39,6 +39,7 @@ import argparse
 import asyncio
 import json
 import os
+import platform
 import signal
 import subprocess
 import sys
@@ -52,6 +53,8 @@ from typing import Any, Callable
 # time to react (KeepAlive bounces in 1-2s on macOS) and a manual respawn
 # can finish bge-small load (~3-10s) plus LanceDB open (~1s).
 _LAUNCHD_REACT_DELAY_SEC = 2.0
+_SYSTEMD_REACT_DELAY_SEC = 2.0
+_SYSTEMCTL_START_TIMEOUT_SEC = 10
 _RESPAWN_BIND_TIMEOUT_SEC = 8.0
 _RESPAWN_POLL_INTERVAL_SEC = 0.1
 
@@ -613,7 +616,7 @@ def check_h_crypto_file_state() -> CheckResult:
             "(h) crypto key file state",
             True,  # WARN does NOT flip exit code
             (
-                f"crypto key file missing at {path}, but a Keychain entry was found.\n"
+                f"crypto key file missing at {path}, but an OS keyring entry was found.\n"
                 f"  Run `iai-mcp crypto migrate-to-file` from a Terminal to migrate the key."
             ),
             status="WARN",
@@ -623,8 +626,8 @@ def check_h_crypto_file_state() -> CheckResult:
             "(h) crypto key file state",
             True,  # WARN does NOT flip exit code
             (
-                f"crypto key file missing at {path}; Keychain probe could not complete "
-                f"(may indicate non-interactive context). If you have an existing Keychain key, "
+                f"crypto key file missing at {path}; OS keyring (macOS Keychain / Linux SecretService) probe could not complete "
+                f"(may indicate non-interactive context). If you have an existing OS keyring entry, "
                 f"run `iai-mcp crypto migrate-to-file` from a Terminal."
             ),
             status="WARN",
@@ -635,7 +638,7 @@ def check_h_crypto_file_state() -> CheckResult:
         "(h) crypto key file state",
         True,
         (
-            f"crypto key file absent at {path} and no Keychain entry detected. "
+            f"crypto key file absent at {path} and no OS keyring entry detected. "
             f"Fresh install — run `iai-mcp crypto init` or set IAI_MCP_CRYPTO_PASSPHRASE."
         ),
         status="PASS",
@@ -1043,20 +1046,21 @@ def check_l_sleep_cycle_status() -> CheckResult:
 
 
 def check_n_hid_idle_source() -> CheckResult:
-    """(n) HID idle source health: PASS if HIDIdleTime present, WARN if not.
+    """(n) idle source health: PASS if any hardware idle signal present, WARN if not.
 
     L6 diagnostic row. Reports which hardware-grounded idle
     signals are reachable on the current host. ``HIDIdleTime`` (via
-    ``ioreg -c IOHIDSystem``) is the primary signal; ``pmset -g log`` is
-    the secondary System/Display Sleep event source.
+    ``ioreg -c IOHIDSystem``) is the primary signal on macOS; ``pmset -g log``
+    is the secondary System/Display Sleep event source on macOS. On Linux,
+    ``logind_idle`` (via ``loginctl show-session``) provides the idle time.
 
     Status rules:
-      - PASS: ``available_signals`` includes ``"HIDIdleTime"``.
-      - WARN: signal list empty (will fall back to heartbeat-only L6 — the
+      - PASS: ``available_signals`` is non-empty (any hardware source present).
+      - WARN: signal list empty (will fall back to heartbeat-only L6 - the
         daemon stays correct but loses the hardware backstop). Advisory
-        only — does NOT flip the doctor exit code (mirrors check_i WARN).
+        only - does NOT flip the doctor exit code (mirrors check_i WARN).
 
-    Display includes the current ``HIDIdleTime`` value and pmset state so
+    Display includes the current idle value and available signal names so
     the user can see what the L6 sleep predicate is evaluating right now.
     """
     from iai_mcp.idle_detector import IdleDetector
@@ -1064,28 +1068,28 @@ def check_n_hid_idle_source() -> CheckResult:
     detector = IdleDetector()
     status = detector.status()
 
-    hid_str = (
+    idle_str = (
         f"{status.hid_idle_sec}s"
         if status.hid_idle_sec is not None
         else "unavailable"
     )
-    pmset_str = "recent-sleep" if status.pmset_recent_sleep else "clean"
+    suspend_str = "recent-sleep" if status.pmset_recent_sleep else "clean"
     signals_str = (
         ",".join(status.available_signals) if status.available_signals else "none"
     )
     detail = (
-        f"HIDIdleTime: {hid_str}, pmset: {pmset_str}, available: {signals_str}"
+        f"idle: {idle_str}, suspend: {suspend_str}, available: {signals_str}"
     )
 
-    if "HIDIdleTime" in status.available_signals:
+    if status.available_signals:
         return CheckResult(
-            name="(n) HID idle source",
+            name="(n) idle source",
             passed=True,
             detail=detail,
             status="PASS",
         )
     return CheckResult(
-        name="(n) HID idle source",
+        name="(n) idle source",
         passed=True,  # WARN — advisory only, does not flip exit code.
         detail=(
             f"{detail}; L6 will fall back to heartbeat-idle only"
@@ -1238,17 +1242,19 @@ def _respawn_daemon() -> tuple[bool, str, int]:
     No-op-with-sleep when launchd plist is present AND we are using the
     default (home-derived) socket path: launchd's KeepAlive will respawn
     the daemon within 1-2s on macOS, so we yield rather than double-spawn.
+    On Linux, if the systemd service unit is installed and using the default
+    socket path, start the socket unit (idempotent socket activation) and
+    yield to systemd.
     If IAI_DAEMON_SOCKET_PATH is set to a non-default value (test isolation
-    or developer custom session), launchd's plist (which does not export
-    the env override) cannot resurrect THIS daemon — manual respawn is
-    required.
+    or developer custom session), neither launchd nor systemd can resurrect
+    THIS daemon — manual respawn is required.
 
     Manual respawn passes os.environ.copy() so IAI_DAEMON_SOCKET_PATH +
     IAI_MCP_STORE propagate to the child process. Without env propagation,
     test recovery would always spawn against the user's real ~/.iai-mcp/
     paths — the env-isolation contract from LOCK.
     """
-    from iai_mcp.cli import LAUNCHD_TARGET
+    from iai_mcp.cli import LAUNCHD_TARGET, SYSTEMD_TARGET
 
     t0 = time.monotonic()
     socket_path = _resolve_socket_path()
@@ -1269,6 +1275,36 @@ def _respawn_daemon() -> tuple[bool, str, int]:
             "launchd-managed (KeepAlive will respawn)",
             int((time.monotonic() - t0) * 1000),
         )
+
+    # systemd-managed: call `systemctl --user start iai-mcp-daemon.socket`
+    # which is idempotent and immediately triggers socket activation.
+    if using_default_socket and platform.system() == "Linux":
+        target_path = Path(SYSTEMD_TARGET).expanduser()
+        if target_path.exists():
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "start", "iai-mcp-daemon.socket"],
+                    check=False,
+                    capture_output=True,
+                    timeout=_SYSTEMCTL_START_TIMEOUT_SEC,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+                return (
+                    False,
+                    f"systemctl start failed: {type(e).__name__}: {e}",
+                    int((time.monotonic() - t0) * 1000),
+                )
+            if result.returncode != 0:
+                return (
+                    False,
+                    f"systemctl start failed (rc={result.returncode})",
+                    int((time.monotonic() - t0) * 1000),
+                )
+            return (
+                True,
+                "systemd-managed (socket unit started, will activate daemon)",
+                int((time.monotonic() - t0) * 1000),
+            )
 
     try:
         subprocess.Popen(

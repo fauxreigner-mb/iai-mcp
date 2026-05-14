@@ -9,12 +9,15 @@
 set -u  # no -e: the hook must not block session teardown
 input=$(cat 2>/dev/null || true)
 
+# Portable python lookup — /usr/bin/python3 may be absent on some Linux distros
+_PY="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo /usr/bin/python3)"
+
 extract() {
   local key=$1
   if command -v jq >/dev/null 2>&1; then
     printf '%s' "$input" | jq -r ".${key} // empty" 2>/dev/null
   else
-    printf '%s' "$input" | /usr/bin/python3 -c "
+    printf '%s' "$input" | "${_PY}" -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
