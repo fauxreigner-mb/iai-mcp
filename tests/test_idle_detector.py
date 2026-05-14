@@ -19,6 +19,7 @@ the suite host-dependent.
 """
 from __future__ import annotations
 
+import platform
 import subprocess
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -310,3 +311,105 @@ def test_subprocess_uses_array_form_not_shell() -> None:
         assert "timeout" in kwargs and kwargs["timeout"] > 0, (
             f"subprocess.run must set a finite timeout, got: {kwargs}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Linux logind backend tests
+# ---------------------------------------------------------------------------
+
+
+def _loginctl_stdout(idle_hint: str = "yes", idle_since_hint_us: int = 0) -> str:
+    """Build fake loginctl show-session output."""
+    return f"IdleHint={idle_hint}\nIdleSinceHint={idle_since_hint_us}\n"
+
+
+class TestLinuxLogindBackend:
+    """Tests for _LinuxLogindBackend — all subprocess calls mocked."""
+
+    def test_hid_idle_time_sec_parses_loginctl(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """IdleSinceHint µs → seconds since last activity computed correctly."""
+        import time
+        import iai_mcp.idle_detector as _mod
+
+        # Simulate: last activity was 45 minutes ago (in µs since epoch)
+        idle_sec = 45 * 60
+        idle_since_us = int((time.time() - idle_sec) * 1_000_000)
+        fake_stdout = f"IdleHint=yes\nIdleSinceHint={idle_since_us}\n"
+
+        with patch(
+            "iai_mcp.idle_detector.subprocess.run",
+            return_value=_completed_process(stdout=fake_stdout),
+        ):
+            backend = _mod._LinuxLogindBackend()
+            result = backend.hid_idle_time_sec()
+
+        assert result is not None
+        # Allow ±5s slop for test execution time
+        assert abs(result - idle_sec) < 5, f"expected ~{idle_sec}s, got {result}s"
+
+    def test_hid_idle_time_sec_returns_none_on_file_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """FileNotFoundError (loginctl absent) → None."""
+        import iai_mcp.idle_detector as _mod
+        with patch("iai_mcp.idle_detector.subprocess.run", side_effect=FileNotFoundError("loginctl not found")):
+            backend = _mod._LinuxLogindBackend()
+            assert backend.hid_idle_time_sec() is None
+
+    def test_hid_idle_time_sec_returns_none_on_timeout(self) -> None:
+        """Timeout → None."""
+        import iai_mcp.idle_detector as _mod
+        with patch(
+            "iai_mcp.idle_detector.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="loginctl", timeout=5),
+        ):
+            backend = _mod._LinuxLogindBackend()
+            assert backend.hid_idle_time_sec() is None
+
+    def test_hid_idle_time_sec_returns_none_on_parse_failure(self) -> None:
+        """Unparseable output → None."""
+        import iai_mcp.idle_detector as _mod
+        with patch(
+            "iai_mcp.idle_detector.subprocess.run",
+            return_value=_completed_process(stdout="garbage output\n"),
+        ):
+            backend = _mod._LinuxLogindBackend()
+            assert backend.hid_idle_time_sec() is None
+
+    def test_recent_suspend_always_false(self) -> None:
+        """recent_suspend always returns False — container can't see host suspend."""
+        import iai_mcp.idle_detector as _mod
+        backend = _mod._LinuxLogindBackend()
+        assert backend.recent_suspend() is False
+
+    def test_available_signals_logind_idle_on_success(self) -> None:
+        """available_signals returns ['logind_idle'] when loginctl responds."""
+        import iai_mcp.idle_detector as _mod
+        fake_stdout = "IdleHint=yes\nIdleSinceHint=1000000\n"
+        with patch(
+            "iai_mcp.idle_detector.subprocess.run",
+            return_value=_completed_process(stdout=fake_stdout),
+        ):
+            backend = _mod._LinuxLogindBackend()
+            assert backend.available_signals() == ["logind_idle"]
+
+    def test_available_signals_empty_on_failure(self) -> None:
+        """available_signals returns [] when loginctl is absent."""
+        import iai_mcp.idle_detector as _mod
+        with patch("iai_mcp.idle_detector.subprocess.run", side_effect=FileNotFoundError):
+            backend = _mod._LinuxLogindBackend()
+            assert backend.available_signals() == []
+
+    def test_status_available_signals_populated_on_linux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """IdleDetector.status() on Linux populates available_signals from logind."""
+        import time
+        import iai_mcp.idle_detector as _mod
+
+        idle_since_us = int((time.time() - 1800) * 1_000_000)  # 30 min ago
+        fake_stdout = f"IdleHint=yes\nIdleSinceHint={idle_since_us}\n"
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        with patch(
+            "iai_mcp.idle_detector.subprocess.run",
+            return_value=_completed_process(stdout=fake_stdout),
+        ):
+            detector = _mod.IdleDetector()
+            status = detector.status()
+        assert "logind_idle" in status.available_signals
